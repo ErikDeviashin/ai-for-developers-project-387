@@ -618,11 +618,8 @@ export function BookPage() {
 
                       {canCancel ? (
                         cancelConfirming ? (
-                          <div
-                            role="group"
-                            aria-label="Подтверждение отмены встречи"
-                            className="mt-3"
-                          >
+                          <fieldset className="mt-3 min-w-0 border-0 p-0">
+                            <legend className="sr-only">Подтверждение отмены встречи</legend>
                             <p>Отменить встречу?</p>
                             <div className="mt-2 flex flex-wrap gap-2">
                               <button
@@ -642,7 +639,7 @@ export function BookPage() {
                                 Нет
                               </button>
                             </div>
-                          </div>
+                          </fieldset>
                         ) : (
                           <button
                             type="button"
