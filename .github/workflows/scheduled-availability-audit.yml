@@ -1,0 +1,401 @@
+name: Scheduled Availability Audit
+
+# GitHub Actions cron uses UTC. Asia/Tbilisi is UTC+4 all year (no DST),
+# so 06:17 local time is 02:17 UTC.
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+    inputs:
+      use_training_finding:
+        description: 'Добавить в отчёт учебную находку (не подтверждённый дефект) для проверки пайплайна'
+        type: boolean
+        default: true
+
+concurrency:
+  group: scheduled-availability-audit-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      APP_URL: ${{ vars.APP_URL }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      TRIGGER: ${{ github.event_name }}
+      USE_TRAINING_FINDING: ${{ github.event_name == 'workflow_dispatch' && inputs.use_training_finding }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate configuration
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_URL:-}" ]; then
+            echo "::error title=APP_URL is not configured::Set the repository variable APP_URL (Settings -> Secrets and variables -> Actions -> Variables) to the deployed service URL."
+            exit 1
+          fi
+          case "$APP_URL" in
+            http://*|https://*) ;;
+            *)
+              echo "::error title=APP_URL is invalid::APP_URL must start with http:// or https://. Current value: $APP_URL"
+              exit 1
+              ;;
+          esac
+
+      - name: Check main page and write report
+        run: |
+          set -euo pipefail
+
+          audit_dir=.audit-output
+          report="$audit_dir/audit-report.md"
+          body="$audit_dir/home.html"
+          metrics="$audit_dir/curl-metrics.txt"
+          curl_log="$audit_dir/curl-stderr.txt"
+          mkdir -p "$audit_dir"
+
+          url="${APP_URL%/}/"
+          curl_exit=0
+          curl -sS -L \
+            --connect-timeout 10 --max-time 60 \
+            --retry 3 --retry-delay 2 --retry-connrefused \
+            -o "$body" -w '%{http_code} %{time_total}' "$url" \
+            > "$metrics" 2> "$curl_log" || curl_exit=$?
+
+          http_status="$(tail -n 1 "$metrics" | awk '{print $1}')"
+          response_time="$(tail -n 1 "$metrics" | awk '{print $2}')"
+          [ -n "$http_status" ] || http_status=000
+          [ -n "$response_time" ] || response_time=unknown
+
+          if [ -s "$body" ] && grep -Fq 'Календарь звонков' "$body"; then
+            text_found=yes
+            text_label='найден'
+          else
+            text_found=no
+            text_label='не найден'
+          fi
+
+          training_flag="$(printf '%s' "${USE_TRAINING_FINDING:-false}" | tr '[:upper:]' '[:lower:]')"
+          training_enabled=no
+          if [ "$training_flag" = true ]; then
+            training_enabled=yes
+          fi
+
+          findings=0
+
+          {
+            echo "# Отчёт аудита доступности"
+            echo
+            echo "- APP_URL: $url"
+            echo "- Триггер: $TRIGGER"
+            echo "- Время проверки (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "- Ссылка на запуск: $RUN_URL"
+            echo "- Учебная находка включена: $training_enabled"
+            echo
+            echo "## Проверка главной страницы"
+            echo
+            echo "| Параметр | Значение |"
+            echo "| --- | --- |"
+            echo "| HTTP status | $http_status |"
+            echo "| Время ответа, с | $response_time |"
+            echo "| Текст «Календарь звонков» | $text_label |"
+            echo "| curl exit code | $curl_exit |"
+            echo
+            echo "## Находки"
+            echo
+          } > "$report"
+
+          if [ "$curl_exit" -ne 0 ] || [ "$http_status" != 200 ]; then
+            findings=$((findings + 1))
+            {
+              echo "### $findings. Главная страница недоступна или вернула HTTP status, отличный от 200"
+              echo
+              echo "- audit-key: home-page-unavailable"
+              echo "- Категория: подтверждённая проблема проверки"
+              echo "- Проблема: запрос \`GET $url\` завершился с curl exit code \`$curl_exit\` и HTTP status \`$http_status\`."
+              if [ "$curl_exit" -ne 0 ] && [ -s "$curl_log" ]; then
+                echo "- Ошибка curl: \`$(head -c 400 "$curl_log" | tr '\n' ' ')\`"
+              fi
+              echo "- Предлагаемое действие: проверить состояние деплоя и доступность сервиса по APP_URL, затем повторить этот workflow."
+              echo
+            } >> "$report"
+          fi
+
+          if [ "$curl_exit" -eq 0 ] && [ "$http_status" = 200 ] && [ "$text_found" != yes ]; then
+            findings=$((findings + 1))
+            {
+              echo "### $findings. На главной странице нет текста «Календарь звонков»"
+              echo
+              echo "- audit-key: home-page-missing-calendar-text"
+              echo "- Категория: подтверждённая проблема проверки"
+              echo "- Проблема: ответ \`GET $url\` (HTTP \`$http_status\`) не содержит текст «Календарь звонков»."
+              echo "- Предлагаемое действие: проверить, что по APP_URL развёрнут актуальный клиент приложения и главная страница отдаёт ожидаемую разметку."
+              echo
+            } >> "$report"
+          fi
+
+          if [ "$training_enabled" = yes ]; then
+            findings=$((findings + 1))
+            {
+              echo "### $findings. Учебная находка: аудит ограничен только главной страницей"
+              echo
+              echo "- audit-key: training-finding-main-page-only"
+              echo "- Категория: **учебная, не подтверждённый дефект**"
+              echo "- Проблема: автоматическая проверка покрывает только главную страницу, поэтому отказ гостевого пути \`/book\` или страницы владельца \`/owner\` останется незамеченным."
+              echo "- Предлагаемое действие: расширить аудит проверками \`/book\` и \`/owner\` (HTTP 200 и ключевой текст) с отдельными стабильными audit-key."
+              echo "- Почему это не подтверждённый дефект: это ограничение покрытия проверки, а не наблюдаемый сбой сервиса."
+              echo
+            } >> "$report"
+          fi
+
+          if [ "$findings" -eq 0 ]; then
+            echo "Находок нет." >> "$report"
+          fi
+
+          cat "$report"
+
+      - name: Check OpenCode authentication
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${OPENCODE_API_KEY:-}" ]; then
+            echo "::error::OPENCODE_API_KEY is not configured. Add the repository secret OPENCODE_API_KEY, the same secret used by the existing OpenCode workflows."
+            exit 1
+          fi
+
+      - name: Snapshot issues before agent
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          audit_dir=.audit-output
+          report="$audit_dir/audit-report.md"
+          keys_file="$audit_dir/audit-keys.txt"
+          raw="$audit_dir/issues-before.raw.json"
+
+          grep -oE 'audit-key: [A-Za-z0-9._-]+' "$report" \
+            | sed 's/^audit-key: //' \
+            | sort -u > "$keys_file" || true
+
+          gh api --paginate --slurp \
+            "repos/$GH_REPO/issues?state=all&per_page=100" > "$raw"
+
+          jq --arg repo "$GH_REPO" --rawfile keyfile "$keys_file" '
+            def has_marker($key):
+              ((.body // "")
+                | split("\n")
+                | map(sub("\r$"; ""))
+                | any(. == ("audit-key: " + $key)));
+            (add // []) as $all
+            | ($all | map(select(has("pull_request") | not))) as $issues
+            | ($keyfile | split("\n") | map(select(length > 0))) as $keys
+            | {
+                generated_at: (now | todate),
+                repository: $repo,
+                total_issues: ($issues | length),
+                counts: (
+                  reduce $keys[] as $key ({};
+                    .[$key] = ([$issues[] | select(has_marker($key))] | length)
+                  )
+                ),
+                matches: (
+                  reduce $keys[] as $key ({};
+                    .[$key] = [
+                      $issues[]
+                      | select(has_marker($key))
+                      | {number, state, title, html_url}
+                    ]
+                  )
+                )
+              }
+          ' "$raw" > "$audit_dir/issues-before.json"
+
+          cat "$audit_dir/issues-before.json"
+
+      - name: Install OpenCode
+        timeout-minutes: 5
+        run: curl -fsSL https://opencode.ai/install | bash -s -- --version 1.19.6 --no-modify-path
+
+      - name: Run OpenCode audit triage
+        id: agent
+        timeout-minutes: 4
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OPENCODE_DISABLE_PROJECT_CONFIG: '1'
+          OPENCODE_DISABLE_EXTERNAL_SKILLS: '1'
+          OPENCODE_DISABLE_CLAUDE_CODE: '1'
+          OPENCODE_CONFIG_CONTENT: >-
+            {"share":"disabled","permission":{"edit":"deny","bash":"allow","webfetch":"deny","websearch":"deny","external_directory":"deny","task":"deny","skill":"deny","question":"deny"},"tools":{"write":false,"edit":false,"patch":false}}
+        run: |
+          set -uo pipefail
+          prompt=$(cat <<'PROMPT'
+          You are the scheduled availability auditor for the repository __GH_REPO__.
+
+          Read:
+          - .audit-output/audit-report.md — the check result and findings.
+          - .audit-output/issues-before.json — the deterministic snapshot of all open and closed issues
+            before this run, with counts and matches for every audit-key.
+
+          The checked URL is __APP_URL__ and this workflow run is __RUN_URL__.
+
+          Some findings may be marked as «учебная, не подтверждённый дефект». Treat them as intentionally
+          unconfirmed training material: never call them confirmed defects.
+
+          For every finding with an audit-key:
+          1. Find the key in issues-before.json.
+          2. If the count is greater than 0, an issue already exists. Do not create an issue for this key
+             and do not leave a comment. Leave the existing issue untouched.
+          3. If the count is 0, create exactly one issue for that finding. The issue must contain:
+             - a title that names the concrete problem;
+             - the problem and the proposed action from the report;
+             - the checked URL: __APP_URL__;
+             - the current workflow run link: __RUN_URL__;
+             - the marker on its own separate line, exactly in the form audit-key: <value> — plain text, without backticks, with nothing else on that line, and with no leading or trailing spaces;
+             - for a training finding, the explicit statement «учебная, не подтверждённый дефект».
+          4. Do not create issues for keys that are not in the report or that already have count > 0.
+
+          If the report has no findings, create no issues and state «Находок не обнаружено» in your final
+          answer.
+
+          The workflow publishes a deterministic GitHub Actions job summary after your run. Do not write to
+          GITHUB_STEP_SUMMARY yourself.
+
+          Print a short final summary of what you created or skipped as your final answer.
+
+          Rules:
+          - Do not edit repository files, commit, push, open pull requests, or change workflow files.
+          - Do not modify .audit-output/audit-report.md or .audit-output/issues-before.json.
+          - Use `gh` with the provided GH_TOKEN only to create the issues described above.
+          - Never reveal OPENCODE_API_KEY, GH_TOKEN, or any other secret.
+          - Work non-interactively and stop after the summary.
+          PROMPT
+          )
+          prompt="${prompt//__GH_REPO__/$GH_REPO}"
+          prompt="${prompt//__APP_URL__/$APP_URL}"
+          prompt="${prompt//__RUN_URL__/$RUN_URL}"
+
+          timeout --signal=TERM --kill-after=15s 210 \
+            opencode --pure run \
+              --model opencode/deepseek-v4.1-flash \
+              --agent build \
+              --dir . \
+              "$prompt" 2>&1 | tee .audit-output/agent-output.log
+
+      - name: Verify issue deduplication
+        if: always() && hashFiles('.audit-output/issues-before.json') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          audit_dir=.audit-output
+          before="$audit_dir/issues-before.json"
+          after="$audit_dir/issues-after.json"
+          raw="$audit_dir/issues-after.raw.json"
+          verification="$audit_dir/issue-verification.txt"
+
+          : > "$verification"
+
+          gh api --paginate --slurp \
+            "repos/$GH_REPO/issues?state=all&per_page=100" > "$raw"
+
+          jq --arg repo "$GH_REPO" --slurpfile before "$before" '
+            def has_marker($key):
+              ((.body // "")
+                | split("\n")
+                | map(sub("\r$"; ""))
+                | any(. == ("audit-key: " + $key)));
+            (add // []) as $all
+            | ($all | map(select(has("pull_request") | not))) as $issues
+            | $before[0] as $b
+            | {
+                generated_at: (now | todate),
+                repository: $repo,
+                total_issues: ($issues | length),
+                keys: (
+                  ($b.counts // {}) | to_entries | map(
+                    .key as $key
+                    | [$issues[] | select(has_marker($key)) | {number, state, title, html_url}] as $matches
+                    | {
+                        key: $key,
+                        before: ($b.counts[$key] // 0),
+                        after: ($matches | length),
+                        matches: $matches
+                      }
+                  )
+                )
+              }
+          ' "$raw" > "$after"
+
+          failed=0
+          key_count="$(jq '.keys | length' "$after")"
+          if [ "$key_count" -eq 0 ]; then
+            echo "audit-key в отчёте не найдены: новых находок нет." >> "$verification"
+          else
+            while IFS=$'\t' read -r key before_count after_count; do
+              if [ "$before_count" -eq 0 ] && [ "$after_count" -ne 1 ]; then
+                echo "::error::Issue deduplication failed for $key: expected exactly 1 new issue, found $after_count."
+                echo "FAIL $key: before=$before_count after=$after_count expected=1" >> "$verification"
+                failed=1
+              elif [ "$before_count" -gt 0 ] && [ "$after_count" -ne "$before_count" ]; then
+                echo "::error::Issue deduplication failed for $key: expected $before_count existing issue(s), found $after_count; a duplicate issue is not allowed."
+                echo "FAIL $key: before=$before_count after=$after_count expected=$before_count (no duplicate allowed)" >> "$verification"
+                failed=1
+              else
+                echo "OK $key: before=$before_count after=$after_count" >> "$verification"
+              fi
+            done < <(jq -r '.keys[] | [.key, (.before | tostring), (.after | tostring)] | @tsv' "$after")
+          fi
+
+          cat "$verification"
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: availability-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .audit-output/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish audit summary
+        if: always()
+        run: |
+          {
+            echo "## Регулярный аудит доступности"
+            echo
+            echo "- Run: $RUN_URL"
+            echo
+            if [ -f .audit-output/audit-report.md ]; then
+              cat .audit-output/audit-report.md
+              echo
+              if grep -Fq 'Находок нет.' .audit-output/audit-report.md; then
+                echo "**Итог:** Находок не обнаружено."
+              fi
+            else
+              echo "Отчёт не сформирован: проверьте предыдущие шаги."
+            fi
+            echo
+            echo "### Проверка issues"
+            echo
+            if [ -f .audit-output/issue-verification.txt ]; then
+              cat .audit-output/issue-verification.txt
+            else
+              echo "Проверка issues не выполнялась."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
