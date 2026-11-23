@@ -14,7 +14,7 @@ permissions:
   actions: read
   checks: read
   statuses: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   review:
