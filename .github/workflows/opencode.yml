@@ -79,32 +79,55 @@ jobs:
         uses: actions/github-script@v8
         with:
           script: |
-            const pr = context.payload.pull_request?.number ?? context.payload.issue?.number
-            const displayTitle = `OpenCode PR #${pr} interactive`
+            const budgetLimit = 3
+            const agentStepName = 'Run OpenCode on comment'
             const workflowId = 'opencode.yml'
-            const attemptNumber = (value) => {
+            const positiveInt = (value, fallback) => {
               const parsed = Number(value)
-              return Number.isInteger(parsed) && parsed > 0 ? parsed : 1
+              return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
             }
-            const currentAttempt = attemptNumber(process.env.GITHUB_RUN_ATTEMPT)
+            const pr = Number(context.payload.pull_request?.number ?? context.payload.issue?.number)
+            const currentRunId = positiveInt(context.runId, 0)
+            const currentAttempt = positiveInt(process.env.GITHUB_RUN_ATTEMPT, 1)
+
+            if (!Number.isInteger(pr) || pr <= 0) {
+              core.warning('Cannot determine the pull request number; blocking the interactive run')
+              core.setOutput('allowed', 'false')
+              core.setOutput('used', '0')
+              core.setOutput('pr', '')
+              return
+            }
+
+            const displayTitle = `OpenCode PR #${pr} interactive`
 
             async function listRuns(event) {
-              const runs = []
-              let page = 1
-              while (true) {
-                const { data } = await github.rest.actions.listWorkflowRuns({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  workflow_id: workflowId,
-                  event,
-                  per_page: 100,
-                  page,
-                })
-                runs.push(...data.workflow_runs)
-                if (data.workflow_runs.length < 100) break
-                page += 1
+              return github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: workflowId,
+                event,
+                per_page: 100,
+              })
+            }
+
+            async function listJobs(runId, attempt) {
+              try {
+                return await github.paginate(
+                  github.rest.actions.listJobsForWorkflowRunAttempt,
+                  {
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    run_id: runId,
+                    attempt_number: attempt,
+                    per_page: 100,
+                  },
+                )
+              } catch (error) {
+                // An attempt can disappear after log retention; a missing attempt
+                // must not turn the budget into NaN or fail the whole check.
+                if (error?.status === 404) return []
+                throw error
               }
-              return runs
             }
 
             const runs = [
@@ -113,22 +136,47 @@ jobs:
             ]
             const matching = new Map()
             for (const run of runs) {
-              if (run.display_title === displayTitle) matching.set(run.id, run)
+              const runId = positiveInt(run?.id, 0)
+              if (!runId || run?.display_title !== displayTitle) continue
+              matching.set(runId, run)
             }
 
             let used = 0
-            let currentSeen = false
+            let currentStepSeen = false
             for (const run of matching.values()) {
-              const attempt = run.id === context.runId
-                ? Math.max(attemptNumber(run.run_attempt), currentAttempt)
-                : attemptNumber(run.run_attempt)
-              used += attempt
-              if (run.id === context.runId) currentSeen = true
-            }
-            if (!currentSeen) used += currentAttempt
+              const runId = positiveInt(run.id, 0)
+              const reportedAttempts = positiveInt(run.run_attempt, 1)
+              const attempts = runId === currentRunId
+                ? Math.max(reportedAttempts, currentAttempt)
+                : reportedAttempts
 
-            const allowed = used <= 3
-            core.info(`Budget for ${displayTitle}: used=${used}, currentSeen=${currentSeen}`)
+              for (let attempt = 1; attempt <= attempts; attempt += 1) {
+                const jobs = await listJobs(runId, attempt)
+                for (const job of jobs) {
+                  const steps = Array.isArray(job?.steps) ? job.steps : []
+                  const agentStep = steps.find((step) => step?.name === agentStepName)
+                  if (!agentStep) continue
+
+                  if (runId === currentRunId && attempt === currentAttempt) {
+                    currentStepSeen = true
+                  }
+
+                  const status = String(agentStep.status ?? '').toLowerCase()
+                  const conclusion = String(agentStep.conclusion ?? '').toLowerCase()
+                  if (status === 'skipped' || conclusion === 'skipped') continue
+                  used += 1
+                }
+              }
+            }
+
+            // The current command has not reached the agent step yet, so count it
+            // as one prospective attempt only when the API does not show it.
+            if (!currentStepSeen) used += 1
+
+            const allowed = used <= budgetLimit
+            core.info(
+              `Interactive budget for ${displayTitle}: used=${used}, limit=${budgetLimit}, currentStepSeen=${currentStepSeen}`,
+            )
             core.setOutput('allowed', String(allowed))
             core.setOutput('used', String(used))
             core.setOutput('pr', String(pr))
@@ -276,8 +324,11 @@ jobs:
               ;;
           esac
 
-          head_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
-          [ -n "$head_sha" ] || head_sha="${{ github.event.pull_request.head.sha || github.sha }}"
+          head_sha="$(gh api "repos/$GH_REPO/pulls/$PR_NUMBER" --jq '.head.sha' 2>/dev/null || true)"
+          if [ -z "$head_sha" ]; then
+            echo "Unable to resolve the pull request head SHA through the REST API; refusing to publish a report without it" >&2
+            exit 1
+          fi
 
           body=$(cat <<EOF
           ### OpenCode: интерактивный запуск не завершён
@@ -291,4 +342,5 @@ jobs:
           EOF
           )
 
-          gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -f body="$body"
+          jq -n --arg body "$body" '{body: $body}' \
+            | gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" --input -
