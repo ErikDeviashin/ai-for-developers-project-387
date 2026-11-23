@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import {
+  cancelMeeting,
   createMeeting,
   getMeetingTypeAvailability,
   listMeetingTypes,
@@ -24,6 +25,7 @@ type Step = 'type' | 'datetime' | 'guest'
 
 const GUEST_FIELDS = new Set(['guestName', 'guestEmail', 'guestAdditionalInfo'])
 const CREATE_MEETING_FALLBACK = 'Не удалось создать встречу. Попробуйте ещё раз.'
+const CANCEL_MEETING_FALLBACK = 'Не удалось отменить встречу. Попробуйте ещё раз.'
 
 type CalendarProps = {
   firstDate: string
@@ -132,6 +134,11 @@ export function BookPage() {
   const [submitting, setSubmitting] = useState(false)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [createdMeeting, setCreatedMeeting] = useState<Meeting | null>(null)
+  const [cancelConfirming, setCancelConfirming] = useState(false)
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  const [meetingStarted, setMeetingStarted] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   useEffect(() => {
     let active = true
@@ -191,9 +198,24 @@ export function BookPage() {
     }
   }, [meetingTypeId, reloadKey])
 
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 30_000)
+
+    return () => clearInterval(timer)
+  }, [])
+
+  function resetCancelState() {
+    setCancelConfirming(false)
+    setCancelling(false)
+    setCancelError(null)
+    setMeetingStarted(false)
+    setNowMs(Date.now())
+  }
+
   function handleTypeSelect(meetingType: MeetingType) {
     const isSameType = selectedType?.id === meetingType.id
 
+    resetCancelState()
     setNotice(null)
     setCheckError(null)
     setStartError(null)
@@ -221,6 +243,7 @@ export function BookPage() {
   }
 
   function handleDateSelect(date: string) {
+    resetCancelState()
     setSelectedDate(date)
     setSelectedSlot(null)
     setNotice(null)
@@ -230,6 +253,7 @@ export function BookPage() {
   }
 
   function handleSlotSelect(slotStart: string) {
+    resetCancelState()
     setSelectedSlot(slotStart)
     setNotice(null)
     setCheckError(null)
@@ -238,6 +262,7 @@ export function BookPage() {
   }
 
   function handleBackToTypes() {
+    resetCancelState()
     setNotice(null)
     setCheckError(null)
     setStartError(null)
@@ -329,6 +354,7 @@ export function BookPage() {
       }
 
       setCreatedMeeting(data)
+      resetCancelState()
       setSelectedDate(data.start.slice(0, 10))
       setSelectedSlot(null)
       setNotice(null)
@@ -377,6 +403,7 @@ export function BookPage() {
   }
 
   function chooseAnotherTime() {
+    resetCancelState()
     setStep('datetime')
     setSelectedSlot(null)
     setStartError(null)
@@ -391,6 +418,50 @@ export function BookPage() {
     setReloadKey((current) => current + 1)
   }
 
+  async function handleCancel() {
+    if (createdMeeting === null || cancelling) {
+      return
+    }
+
+    setCancelling(true)
+    setCancelError(null)
+
+    try {
+      const { response } = await cancelMeeting({
+        path: { id: createdMeeting.id },
+        body: { guestEmail: createdMeeting.guestEmail },
+        throwOnError: true,
+      })
+
+      if (response?.status !== 204) {
+        setCancelError(CANCEL_MEETING_FALLBACK)
+        return
+      }
+
+      setCreatedMeeting(null)
+      setCancelConfirming(false)
+      setCancelError(null)
+      setMeetingStarted(false)
+      setSuccessMessage('Встреча отменена')
+      setNotice(null)
+      setCheckError(null)
+      setStartError(null)
+      setAvailability(null)
+      setAvailabilityError(null)
+      setAvailabilityNotFound(null)
+      setReloadKey((current) => current + 1)
+    } catch {
+      setCancelError(CANCEL_MEETING_FALLBACK)
+    } finally {
+      setCancelling(false)
+    }
+  }
+
+  function handleDeclineCancel() {
+    setCancelConfirming(false)
+    setCancelError(null)
+  }
+
   const daysByDate = new Map((availability?.days ?? []).map((day) => [day.date, day]))
   const selectedDay = selectedDate === null ? undefined : daysByDate.get(selectedDate)
   const hasAnySlot = (availability?.days ?? []).some((day) => day.slots.length > 0)
@@ -402,6 +473,8 @@ export function BookPage() {
     createdMeeting.meetingType.id === selectedType.id
       ? createdMeeting.start.slice(0, 10)
       : null
+  const canCancel =
+    createdMeeting !== null && !meetingStarted && nowMs < Date.parse(createdMeeting.start)
 
   return (
     <PageContainer>
@@ -527,6 +600,53 @@ export function BookPage() {
                       <p className="mt-1">
                         {formatSlotTime(createdMeeting.start)}–{formatSlotTime(createdMeeting.end)}
                       </p>
+
+                      {canCancel ? (
+                        cancelConfirming ? (
+                          <div
+                            role="group"
+                            aria-label="Подтверждение отмены встречи"
+                            className="mt-3"
+                          >
+                            <p>Отменить встречу?</p>
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => void handleCancel()}
+                                disabled={cancelling}
+                                className="rounded-lg bg-red-700 px-4 py-2 font-medium text-white transition-colors hover:bg-red-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {cancelling ? 'Отменяем…' : 'Да, отменить'}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleDeclineCancel}
+                                disabled={cancelling}
+                                className="rounded-lg border border-green-700 px-4 py-2 font-medium text-green-900 transition-colors hover:bg-green-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                Нет
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCancelConfirming(true)
+                              setCancelError(null)
+                            }}
+                            className="mt-3 rounded-lg border border-red-700 px-4 py-2 font-medium text-red-800 transition-colors hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-700"
+                          >
+                            Отменить встречу
+                          </button>
+                        )
+                      ) : null}
+
+                      {cancelError ? (
+                        <p role="alert" className="mt-3 rounded-lg bg-red-50 p-2 text-red-800">
+                          {cancelError}
+                        </p>
+                      ) : null}
                     </div>
                   ) : null}
 
