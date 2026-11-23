@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "vitest", "jsx-a11y"],
+  "categories": {
+    "correctness": "error"
+  },
+  "ignorePatterns": [
+    "client/src/api/generated/**",
+    "contract/generated/**",
+    "**/test-results/**",
+    "**/playwright-report/**",
+    "**/blob-report/**"
+  ]
+}

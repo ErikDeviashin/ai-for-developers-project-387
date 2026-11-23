@@ -1,0 +1,27 @@
+{
+  "name": "ai-for-developers-project-387",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.30.2",
+  "scripts": {
+    "dev": "pnpm --parallel --filter server --filter client dev",
+    "dev:server": "pnpm --filter server dev",
+    "dev:client": "pnpm --filter client dev",
+    "api:generate": "pnpm --filter contract generate && pnpm --filter client generate:sdk",
+    "build": "pnpm api:generate && pnpm --filter client build && pnpm --filter server build",
+    "start": "pnpm --filter server start",
+    "api:check": "pnpm api:generate && test -z \"$(git status --porcelain -- contract/generated client/src/api/generated)\"",
+    "test": "pnpm test:server && pnpm test:e2e",
+    "test:server": "pnpm --filter server test",
+    "test:e2e": "pnpm --filter client test:e2e",
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --fix --deny-warnings .",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "check": "pnpm format:check && pnpm api:check && pnpm lint && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "oxfmt": "0.79.0",
+    "oxlint": "1.94.0"
+  }
+}

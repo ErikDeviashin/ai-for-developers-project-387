@@ -1,0 +1,28 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update the release pull request
+        uses: googleapis/release-please-action@v5
+        with:
+          # A PAT or GitHub App token is required for the existing CI to run on
+          # the release pull request. Falls back to the built-in token.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
