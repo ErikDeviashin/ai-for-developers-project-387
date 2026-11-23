@@ -60,7 +60,7 @@ jobs:
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         with:
-          model: opencode/kimi-k2.7-code
+          model: opencode/deepseek-v4.1-flash
           agent: build
           mentions: /opencode,/oc
           share: false
