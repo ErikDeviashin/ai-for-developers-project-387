@@ -175,6 +175,50 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CreateMeetingRequest'
+  /meetings/{id}/cancel:
+    post:
+      operationId: cancelMeeting
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+      responses:
+        '204':
+          description: 'There is no content to send for this request, but the headers may be useful. '
+        '400':
+          description: The server could not understand the request due to invalid syntax.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The server cannot find the requested resource.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The request conflicts with the current state of the server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelMeetingRequest'
 components:
   schemas:
     AvailabilityDay:
@@ -190,6 +234,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Slot'
+    CancelMeetingRequest:
+      type: object
+      required:
+        - guestEmail
+      properties:
+        guestEmail:
+          type: string
+          minLength: 3
+          maxLength: 254
     CreateMeetingRequest:
       type: object
       required:

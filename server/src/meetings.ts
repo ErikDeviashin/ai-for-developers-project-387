@@ -28,6 +28,8 @@ export type NewMeeting = {
 
 export type CreateMeetingResult = { ok: true; meeting: Meeting } | { ok: false }
 
+export type CancelMeetingResult = 'cancelled' | 'not_found' | 'already_started'
+
 type OwnerMeetingRow = {
   id: number
   meeting_type_id: number
@@ -78,6 +80,44 @@ export function listOwnerMeetings(db: DatabaseSync, now: Date): Meeting[] {
     .all(now.getTime()) as unknown as OwnerMeetingRow[]
 
   return rows.map(toMeeting)
+}
+
+export function cancelMeeting(
+  db: DatabaseSync,
+  id: number,
+  guestEmail: string,
+  now: Date,
+): CancelMeetingResult {
+  const deletion = db
+    .prepare(
+      `DELETE FROM meetings
+        WHERE id = ?
+          AND LOWER(TRIM(guest_email)) = LOWER(TRIM(?))
+          AND start_ms > ?`,
+    )
+    .run(id, guestEmail, now.getTime())
+
+  if (Number(deletion.changes) > 0) {
+    return 'cancelled'
+  }
+
+  // No row was deleted: either the meeting/email pair does not match, or the
+  // meeting has already started. Match the same expression as the DELETE so
+  // the reason is consistent with it.
+  const remaining = db
+    .prepare(
+      `SELECT start_ms AS start_ms
+         FROM meetings
+        WHERE id = ?
+          AND LOWER(TRIM(guest_email)) = LOWER(TRIM(?))`,
+    )
+    .get(id, guestEmail) as { start_ms: number } | undefined
+
+  if (remaining === undefined) {
+    return 'not_found'
+  }
+
+  return remaining.start_ms <= now.getTime() ? 'already_started' : 'not_found'
 }
 
 export function createMeeting(

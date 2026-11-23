@@ -9,10 +9,12 @@ import { extname, isAbsolute } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import { getMeetingTypeAvailability } from './availability.js'
 import { createMeetingType, findMeetingType, listMeetingTypes } from './meeting-types.js'
-import { createMeeting, listOwnerMeetings } from './meetings.js'
+import { cancelMeeting, createMeeting, listOwnerMeetings } from './meetings.js'
 import {
+  parseCancelMeetingBody,
   parseCreateMeetingBody,
   parseCreateMeetingTypeBody,
+  parseMeetingId,
   parseMeetingTypeId,
   rejectQueryParameters,
   validateBookingStart,
@@ -207,6 +209,46 @@ export function buildApp({
 
     reply.code(201)
     return result.meeting
+  })
+
+  app.post('/meetings/:id/cancel', async (request, reply) => {
+    const queryError = rejectUnknownQuery(request, reply)
+    if (queryError) {
+      return queryError
+    }
+
+    const params = request.params as { id?: string }
+    const parsedId = parseMeetingId(params.id)
+    if (!parsedId.ok) {
+      reply.code(400)
+      return parsedId.error
+    }
+
+    const parsed = parseCancelMeetingBody(request.body)
+    if (!parsed.ok) {
+      reply.code(400)
+      return parsed.error
+    }
+
+    const result = cancelMeeting(db, parsedId.value, parsed.value.guestEmail, app.now())
+
+    if (result === 'cancelled') {
+      return reply.code(204).send()
+    }
+
+    if (result === 'already_started') {
+      reply.code(409)
+      return {
+        code: 'MEETING_ALREADY_STARTED',
+        message: 'Встреча уже началась, отменить её нельзя',
+      }
+    }
+
+    reply.code(404)
+    return {
+      code: 'MEETING_NOT_FOUND',
+      message: 'Встреча не найдена',
+    }
   })
 
   if (clientDir !== undefined) {

@@ -130,6 +130,16 @@ model MeetingCreated {
   @body body: Meeting;
 }
 
+model CancelMeetingRequest {
+  @minLength(3)
+  @maxLength(254)
+  guestEmail: string;
+}
+
+model MeetingCancelled {
+  @statusCode _: 204;
+}
+
 @route("/health")
 @get
 @operationId("getHealth")
@@ -170,6 +180,19 @@ op createMeeting(
   @body body: CreateMeetingRequest,
 ):
   | MeetingCreated
+  | BadRequestResponse
+  | NotFoundResponse
+  | ConflictResponse
+  | InternalServerErrorResponse;
+
+@route("/meetings/{id}/cancel")
+@post
+@operationId("cancelMeeting")
+op cancelMeeting(
+  @path @minValue(1) id: int32,
+  @body body: CancelMeetingRequest,
+):
+  | MeetingCancelled
   | BadRequestResponse
   | NotFoundResponse
   | ConflictResponse

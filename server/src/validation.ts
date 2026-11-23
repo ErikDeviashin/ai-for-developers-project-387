@@ -40,6 +40,10 @@ export type NewMeetingInput = {
   guestAdditionalInfo?: string
 }
 
+export type CancelMeetingInput = {
+  guestEmail: string
+}
+
 type ParseResult<T> = { ok: true; value: T } | { ok: false; error: ErrorResponse }
 
 const NAME_MAX_LENGTH = 80
@@ -58,6 +62,7 @@ const MEETING_BODY_FIELDS = new Set([
   'guestEmail',
   'guestAdditionalInfo',
 ])
+const CANCEL_MEETING_BODY_FIELDS = new Set(['guestEmail'])
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const START_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\+04:00$/
 
@@ -324,6 +329,69 @@ export function parseCreateMeetingBody(body: unknown): ParseResult<NewMeetingInp
   }
 }
 
+export function parseCancelMeetingBody(body: unknown): ParseResult<CancelMeetingInput> {
+  if (!isRecord(body)) {
+    return {
+      ok: false,
+      error: {
+        code: 'VALIDATION_ERROR',
+        message: 'Тело запроса должно быть JSON-объектом',
+      },
+    }
+  }
+
+  const details: FieldError[] = []
+
+  for (const field of Object.keys(body)) {
+    if (!CANCEL_MEETING_BODY_FIELDS.has(field)) {
+      details.push({
+        field,
+        code: 'UNKNOWN_FIELD',
+        message: `Неизвестное поле «${field}»`,
+      })
+    }
+  }
+
+  let guestEmail: string | undefined
+  if (typeof body.guestEmail !== 'string' || body.guestEmail.trim() === '') {
+    details.push({
+      field: 'guestEmail',
+      code: 'REQUIRED',
+      message: 'Укажите email',
+    })
+  } else {
+    const trimmed = body.guestEmail.trim()
+
+    if (trimmed.length < GUEST_EMAIL_MIN_LENGTH) {
+      details.push({
+        field: 'guestEmail',
+        code: 'INVALID_VALUE',
+        message: `Email должен быть длиной от ${GUEST_EMAIL_MIN_LENGTH} до ${GUEST_EMAIL_MAX_LENGTH} символов`,
+      })
+    } else if (trimmed.length > GUEST_EMAIL_MAX_LENGTH) {
+      details.push({
+        field: 'guestEmail',
+        code: 'TOO_LONG',
+        message: `Email должен быть не длиннее ${GUEST_EMAIL_MAX_LENGTH} символов`,
+      })
+    } else if (!EMAIL_PATTERN.test(trimmed)) {
+      details.push({
+        field: 'guestEmail',
+        code: 'INVALID_EMAIL',
+        message: 'Укажите корректный email',
+      })
+    } else {
+      guestEmail = trimmed
+    }
+  }
+
+  if (details.length > 0 || guestEmail === undefined) {
+    return { ok: false, error: validationError(details) }
+  }
+
+  return { ok: true, value: { guestEmail } }
+}
+
 function parseStartInstant(value: string): number | undefined {
   if (!START_PATTERN.test(value)) {
     return undefined
@@ -385,31 +453,43 @@ export function validateBookingStart(
   return fieldError === undefined ? undefined : validationError([fieldError])
 }
 
-export function parseMeetingTypeId(raw: string | undefined): ParseResult<number> {
+function parsePositiveId(
+  raw: string | undefined,
+  field: string,
+  entityLabel: string,
+): ParseResult<number> {
   if (raw === undefined || !/^\d+$/.test(raw)) {
-    return { ok: false, error: invalidMeetingTypeId() }
+    return { ok: false, error: invalidId(field, entityLabel) }
   }
 
   const id = Number(raw)
   if (!Number.isInteger(id) || id <= 0 || id > INT32_MAX) {
-    return { ok: false, error: invalidMeetingTypeId() }
+    return { ok: false, error: invalidId(field, entityLabel) }
   }
 
   return { ok: true, value: id }
 }
 
-function invalidMeetingTypeId(): ErrorResponse {
+function invalidId(field: string, entityLabel: string): ErrorResponse {
   return {
     code: 'VALIDATION_ERROR',
     message: 'Проверьте параметры запроса',
     details: [
       {
-        field: 'meetingTypeId',
+        field,
         code: 'INVALID_VALUE',
-        message: 'Идентификатор типа встречи должен быть положительным целым числом',
+        message: `${entityLabel} должен быть положительным целым числом`,
       },
     ],
   }
+}
+
+export function parseMeetingTypeId(raw: string | undefined): ParseResult<number> {
+  return parsePositiveId(raw, 'meetingTypeId', 'Идентификатор типа встречи')
+}
+
+export function parseMeetingId(raw: string | undefined): ParseResult<number> {
+  return parsePositiveId(raw, 'id', 'Идентификатор встречи')
 }
 
 export function rejectQueryParameters(query: Record<string, unknown>): ErrorResponse | undefined {
