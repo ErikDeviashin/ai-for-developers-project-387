@@ -54,13 +54,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Install OpenCode
+        if: steps.origin.outputs.result == 'true'
+        run: curl -fsSL https://opencode.ai/install | bash -s -- --version 1.19.6 --no-modify-path
+
       - name: Run OpenCode
         if: steps.origin.outputs.result == 'true'
-        uses: anomalyco/opencode/github@latest
+        run: opencode github run
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
-        with:
-          model: opencode/deepseek-v4.1-flash
-          agent: build
-          mentions: /opencode,/oc
-          share: false
+          MODEL: opencode/deepseek-v4.1-flash
+          AGENT: build
+          MENTIONS: /opencode,/oc
+          USE_GITHUB_TOKEN: 'false'
