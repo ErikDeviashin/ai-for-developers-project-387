@@ -82,6 +82,11 @@ jobs:
             const pr = context.payload.pull_request?.number ?? context.payload.issue?.number
             const displayTitle = `OpenCode PR #${pr} interactive`
             const workflowId = 'opencode.yml'
+            const attemptNumber = (value) => {
+              const parsed = Number(value)
+              return Number.isInteger(parsed) && parsed > 0 ? parsed : 1
+            }
+            const currentAttempt = attemptNumber(process.env.GITHUB_RUN_ATTEMPT)
 
             async function listRuns(event) {
               const runs = []
@@ -115,12 +120,12 @@ jobs:
             let currentSeen = false
             for (const run of matching.values()) {
               const attempt = run.id === context.runId
-                ? Math.max(run.run_attempt ?? 1, context.runAttempt)
-                : (run.run_attempt ?? 1)
+                ? Math.max(attemptNumber(run.run_attempt), currentAttempt)
+                : attemptNumber(run.run_attempt)
               used += attempt
               if (run.id === context.runId) currentSeen = true
             }
-            if (!currentSeen) used += context.runAttempt
+            if (!currentSeen) used += currentAttempt
 
             const allowed = used <= 3
             core.info(`Budget for ${displayTitle}: used=${used}, currentSeen=${currentSeen}`)
@@ -286,4 +291,4 @@ jobs:
           EOF
           )
 
-          gh pr comment "$PR_NUMBER" --body "$body"
+          gh api --method POST "repos/$GH_REPO/issues/$PR_NUMBER/comments" -f body="$body"
