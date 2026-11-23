@@ -450,8 +450,23 @@ export function BookPage() {
       setAvailabilityError(null)
       setAvailabilityNotFound(null)
       setReloadKey((current) => current + 1)
-    } catch {
-      setCancelError(CANCEL_MEETING_FALLBACK)
+    } catch (error: unknown) {
+      const response = toErrorResponse(error)
+
+      if (response?.code === 'MEETING_ALREADY_STARTED') {
+        setCancelConfirming(false)
+        setMeetingStarted(true)
+        setCancelError(response.message)
+        return
+      }
+
+      if (response?.code === 'MEETING_NOT_FOUND') {
+        setCancelConfirming(false)
+        setCancelError(response.message)
+        return
+      }
+
+      setCancelError(response?.message ?? CANCEL_MEETING_FALLBACK)
     } finally {
       setCancelling(false)
     }

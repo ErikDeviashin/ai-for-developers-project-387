@@ -87,3 +87,38 @@ test('после отмены и перезагрузки освободивши
 
   await bookSlot(page, meetingTypeName, '17:00', 'Борис Тестов', 'boris.testov@example.com')
 })
+
+test('неуспешная отмена не выглядит как успешная и оставляет карточку', async ({ page }) => {
+  const suffix = `${Date.now()}`
+  const meetingTypeName = `Нет отмены ${suffix}`
+  const guestEmail = 'cancel.missing@example.com'
+
+  await page.clock.setFixedTime(FIXED_CLIENT_TIME)
+  await createMeetingType(page, meetingTypeName)
+  await bookSlot(page, meetingTypeName, '14:00', 'Вера Тестова', guestEmail)
+
+  const meetingsResponse = await page.request.get('/meetings')
+  expect(meetingsResponse.status()).toBe(200)
+  const meetings = (await meetingsResponse.json()) as Array<{
+    id: number
+    meetingType: { name: string }
+    guestEmail: string
+  }>
+  const meeting = meetings.find(
+    (entry) => entry.meetingType.name === meetingTypeName && entry.guestEmail === guestEmail,
+  )
+  expect(meeting).toBeDefined()
+
+  const externalCancel = await page.request.post(`/meetings/${meeting?.id}/cancel`, {
+    data: { guestEmail },
+  })
+  expect(externalCancel.status()).toBe(204)
+
+  await page.getByRole('button', { name: 'Отменить встречу', exact: true }).click()
+  await page.getByRole('button', { name: 'Да, отменить' }).click()
+
+  await expect(page.getByText('Встреча не найдена')).toBeVisible()
+  await expect(page.getByText('Встреча отменена')).toHaveCount(0)
+  await expect(page.getByText('Ваша встреча').first()).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Отменить встречу', exact: true })).toBeVisible()
+})
