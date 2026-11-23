@@ -9,6 +9,10 @@ export type AvailabilityDay = {
     slots: Array<Slot>;
 };
 
+export type CancelMeetingRequest = {
+    guestEmail: string;
+};
+
 export type CreateMeetingRequest = {
     meetingTypeId: number;
     start: string;
@@ -256,3 +260,42 @@ export type CreateMeetingResponses = {
 };
 
 export type CreateMeetingResponse = CreateMeetingResponses[keyof CreateMeetingResponses];
+
+export type CancelMeetingData = {
+    body: CancelMeetingRequest;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/meetings/{id}/cancel';
+};
+
+export type CancelMeetingErrors = {
+    /**
+     * The server could not understand the request due to invalid syntax.
+     */
+    400: ErrorResponse;
+    /**
+     * The server cannot find the requested resource.
+     */
+    404: ErrorResponse;
+    /**
+     * The request conflicts with the current state of the server.
+     */
+    409: ErrorResponse;
+    /**
+     * Server error
+     */
+    500: ErrorResponse;
+};
+
+export type CancelMeetingError = CancelMeetingErrors[keyof CancelMeetingErrors];
+
+export type CancelMeetingResponses = {
+    /**
+     * There is no content to send for this request, but the headers may be useful.
+     */
+    204: void;
+};
+
+export type CancelMeetingResponse = CancelMeetingResponses[keyof CancelMeetingResponses];

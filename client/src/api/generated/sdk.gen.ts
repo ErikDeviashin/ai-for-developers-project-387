@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateMeetingData, CreateMeetingErrors, CreateMeetingResponses, CreateMeetingTypeData, CreateMeetingTypeErrors, CreateMeetingTypeResponses, GetHealthData, GetHealthErrors, GetHealthResponses, GetMeetingTypeAvailabilityData, GetMeetingTypeAvailabilityErrors, GetMeetingTypeAvailabilityResponses, ListMeetingTypesData, ListMeetingTypesErrors, ListMeetingTypesResponses, ListOwnerMeetingsData, ListOwnerMeetingsErrors, ListOwnerMeetingsResponses } from './types.gen';
+import type { CancelMeetingData, CancelMeetingErrors, CancelMeetingResponses, CreateMeetingData, CreateMeetingErrors, CreateMeetingResponses, CreateMeetingTypeData, CreateMeetingTypeErrors, CreateMeetingTypeResponses, GetHealthData, GetHealthErrors, GetHealthResponses, GetMeetingTypeAvailabilityData, GetMeetingTypeAvailabilityErrors, GetMeetingTypeAvailabilityResponses, ListMeetingTypesData, ListMeetingTypesErrors, ListMeetingTypesResponses, ListOwnerMeetingsData, ListOwnerMeetingsErrors, ListOwnerMeetingsResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -37,6 +37,15 @@ export const listOwnerMeetings = <ThrowOnError extends boolean = false>(options?
 
 export const createMeeting = <ThrowOnError extends boolean = false>(options: Options<CreateMeetingData, ThrowOnError>): RequestResult<CreateMeetingResponses, CreateMeetingErrors, ThrowOnError> => (options.client ?? client).post<CreateMeetingResponses, CreateMeetingErrors, ThrowOnError>({
     url: '/meetings',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const cancelMeeting = <ThrowOnError extends boolean = false>(options: Options<CancelMeetingData, ThrowOnError>): RequestResult<CancelMeetingResponses, CancelMeetingErrors, ThrowOnError> => (options.client ?? client).post<CancelMeetingResponses, CancelMeetingErrors, ThrowOnError>({
+    url: '/meetings/{id}/cancel',
     ...options,
     headers: {
         'Content-Type': 'application/json',
