@@ -1,5 +1,8 @@
 name: OpenCode
 
+run-name: >-
+  ${{ ((((github.event_name == 'issue_comment' && github.event.issue.pull_request != null) || github.event_name == 'pull_request_review_comment') && github.event.comment.user.type != 'Bot' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && (github.event.comment.body == '/oc' || startsWith(github.event.comment.body, '/oc ') || github.event.comment.body == '/opencode' || startsWith(github.event.comment.body, '/opencode '))) && format('OpenCode PR #{0} interactive', github.event.issue.number || github.event.pull_request.number)) || format('OpenCode non-interactive {0} {1}', github.event_name, github.run_id) }}
+
 on:
   issue_comment:
     types: [created]
@@ -11,6 +14,13 @@ on:
 concurrency:
   group: opencode-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
   cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  actions: read
+  id-token: write
 
 jobs:
   opencode:
@@ -29,10 +39,6 @@ jobs:
       startsWith(github.event.comment.body, '/opencode ')))
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    permissions:
-      contents: read
-      issues: write
-      id-token: write
     steps:
       - name: Check pull request origin
         id: origin
@@ -58,20 +64,126 @@ jobs:
 
             return pullRequest.head.repo.full_name === repository
 
-      - name: Checkout repository
+      - name: Prepare run state
         if: steps.origin.outputs.result == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/opencode-run"
+          printf 'infra' > "$RUNNER_TEMP/opencode-run/reason"
+
+      - name: Check interactive run budget
+        id: budget
+        if: >-
+          steps.origin.outputs.result == 'true' &&
+          github.event_name != 'issues' &&
+          (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request != null)
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const pr = context.payload.pull_request?.number ?? context.payload.issue?.number
+            const displayTitle = `OpenCode PR #${pr} interactive`
+            const workflowId = 'opencode.yml'
+
+            async function listRuns(event) {
+              const runs = []
+              let page = 1
+              while (true) {
+                const { data } = await github.rest.actions.listWorkflowRuns({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id: workflowId,
+                  event,
+                  per_page: 100,
+                  page,
+                })
+                runs.push(...data.workflow_runs)
+                if (data.workflow_runs.length < 100) break
+                page += 1
+              }
+              return runs
+            }
+
+            const runs = [
+              ...(await listRuns('issue_comment')),
+              ...(await listRuns('pull_request_review_comment')),
+            ]
+            const matching = new Map()
+            for (const run of runs) {
+              if (run.display_title === displayTitle) matching.set(run.id, run)
+            }
+
+            let used = 0
+            let currentSeen = false
+            for (const run of matching.values()) {
+              const attempt = run.id === context.runId
+                ? Math.max(run.run_attempt ?? 1, context.runAttempt)
+                : (run.run_attempt ?? 1)
+              used += attempt
+              if (run.id === context.runId) currentSeen = true
+            }
+            if (!currentSeen) used += context.runAttempt
+
+            const allowed = used <= 3
+            core.info(`Budget for ${displayTitle}: used=${used}, currentSeen=${currentSeen}`)
+            core.setOutput('allowed', String(allowed))
+            core.setOutput('used', String(used))
+            core.setOutput('pr', String(pr))
+
+      - name: Checkout repository
+        if: >-
+          success() &&
+          steps.origin.outputs.result == 'true' &&
+          (github.event_name == 'issues' ||
+          (github.event_name != 'issues' &&
+          (steps.budget.outputs.allowed == 'true' || steps.budget.outputs.allowed == '')))
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Check runtime configuration
+        if: >-
+          success() &&
+          steps.origin.outputs.result == 'true' &&
+          (github.event_name == 'issues' ||
+          (github.event_name != 'issues' &&
+          (steps.budget.outputs.allowed == 'true' || steps.budget.outputs.allowed == '')))
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          if [ -z "$OPENCODE_API_KEY" ]; then
+            printf 'infra' > "$RUNNER_TEMP/opencode-run/reason"
+            echo "OPENCODE_API_KEY is not configured"
+            exit 1
+          fi
+
       - name: Install OpenCode
-        if: steps.origin.outputs.result == 'true'
+        if: >-
+          success() &&
+          steps.origin.outputs.result == 'true' &&
+          (github.event_name == 'issues' ||
+          (github.event_name != 'issues' &&
+          (steps.budget.outputs.allowed == 'true' || steps.budget.outputs.allowed == '')))
         run: curl -fsSL https://opencode.ai/install | bash -s -- --version 1.19.6 --no-modify-path
 
       - name: Run OpenCode on comment
-        if: steps.origin.outputs.result == 'true' && github.event_name != 'issues'
-        run: opencode github run
+        id: agent
+        if: >-
+          success() &&
+          steps.origin.outputs.result == 'true' &&
+          github.event_name != 'issues' &&
+          (steps.budget.outputs.allowed == 'true' || steps.budget.outputs.allowed == '')
+        timeout-minutes: 46
+        run: |
+          set +e
+          printf 'agent_failed' > "$RUNNER_TEMP/opencode-run/reason"
+          timeout --signal=TERM --kill-after=30s 2700 opencode github run
+          status=$?
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+            printf 'timeout' > "$RUNNER_TEMP/opencode-run/reason"
+          elif [ "$status" -ne 0 ]; then
+            printf 'agent_failed' > "$RUNNER_TEMP/opencode-run/reason"
+          fi
+          exit "$status"
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
           GH_TOKEN: ${{ github.token }}
@@ -83,7 +195,9 @@ jobs:
           USE_GITHUB_TOKEN: 'false'
 
       - name: Run OpenCode auto-triage
-        if: steps.origin.outputs.result == 'true' && github.event_name == 'issues'
+        id: triage
+        if: success() && steps.origin.outputs.result == 'true' && github.event_name == 'issues'
+        timeout-minutes: 46
         run: opencode github run
         env:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
@@ -115,3 +229,61 @@ jobs:
           AGENT: build
           MENTIONS: /opencode,/oc
           USE_GITHUB_TOKEN: 'false'
+
+      - name: Publish interactive run report
+        if: >-
+          always() &&
+          steps.origin.outputs.result == 'true' &&
+          github.event_name != 'issues' &&
+          (github.event_name == 'pull_request_review_comment' || github.event.issue.pull_request != null) &&
+          (steps.budget.outputs.allowed == 'false' ||
+          steps.agent.outcome == 'failure' ||
+          steps.agent.outcome == 'cancelled' ||
+          steps.agent.outcome == 'skipped')
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ steps.budget.outputs.allowed }}" = "false" ]; then
+            reason=limit_exhausted
+            note="Лимит 3 интерактивных запуска на этот PR исчерпан. Модель не вызывалась. Исправления запускаются только новой командой /oc от человека."
+          elif [ -s "$RUNNER_TEMP/opencode-run/reason" ]; then
+            reason="$(cat "$RUNNER_TEMP/opencode-run/reason")"
+            note="Запуск завершился без результата. Нужна проверка человеком."
+          else
+            reason=infra
+            note="Не удалось подготовить запуск. Нужна проверка человеком."
+          fi
+
+          case "$reason" in
+            timeout)
+              note="Запуск модели превысил лимит времени. Нужна проверка человеком."
+              ;;
+            infra)
+              note="Не удалось подготовить запуск: ключ, установка или инфраструктура. Модель не опубликовала результат."
+              ;;
+            agent_failed)
+              note="Запуск модели завершился ошибкой. Нужна проверка человеком."
+              ;;
+          esac
+
+          head_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null || true)"
+          [ -n "$head_sha" ] || head_sha="${{ github.event.pull_request.head.sha || github.sha }}"
+
+          body=$(cat <<EOF
+          ### OpenCode: интерактивный запуск не завершён
+
+          - Reason: \`$reason\`
+          - PR head SHA: \`$head_sha\`
+          - Actions run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          - Status: **нужен человек**
+
+          $note
+          EOF
+          )
+
+          gh pr comment "$PR_NUMBER" --body "$body"

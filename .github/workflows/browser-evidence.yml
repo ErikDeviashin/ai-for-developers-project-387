@@ -1,0 +1,249 @@
+name: PR Head Browser Evidence
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: browser-evidence-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  browser-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Prepare early evidence manifest
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/browser-evidence"
+          mkdir -p "$evidence_dir"
+          printf 'not_checked\n' > "$evidence_dir/actual-head-sha.txt"
+          cat > "$evidence_dir/status.txt" <<EOF
+          pr=${PR_NUMBER}
+          expected_head_sha=${EXPECTED_HEAD_SHA}
+          actual_head_sha=not_checked
+          run_id=${{ github.run_id }}
+          run_attempt=${{ github.run_attempt }}
+          stage=pre_checkout
+          status=started
+          checkout_outcome=pending
+          install_dependencies_outcome=pending
+          chromium_outcome=pending
+          playwright_outcome=pending
+          traces=not_checked
+          test_results=not_checked
+          html_report=not_checked
+          reason=
+          EOF
+          cat > "$evidence_dir/manifest.txt" <<EOF
+          artifact=browser-evidence
+          pr=${PR_NUMBER}
+          expected_head_sha=${EXPECTED_HEAD_SHA}
+          actual_head_sha=not_checked
+          run_id=${{ github.run_id }}
+          run_attempt=${{ github.run_attempt }}
+          stage=pre_checkout
+          status=started
+          created_at=$(date -u +%FT%TZ)
+          status_file=status.txt
+          EOF
+          cat "$evidence_dir/status.txt"
+
+      - name: Checkout pull request head
+        id: checkout
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Record and verify head SHA
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/browser-evidence"
+          actual_head_sha="$(git rev-parse HEAD)"
+          printf '%s\n' "$actual_head_sha" > "$evidence_dir/actual-head-sha.txt"
+          sed -i "s/^actual_head_sha=.*/actual_head_sha=${actual_head_sha}/" "$evidence_dir/status.txt"
+          sed -i "s/^stage=.*/stage=checked_out/" "$evidence_dir/status.txt"
+          sed -i "s/^status=.*/status=head_verified/" "$evidence_dir/status.txt"
+          sed -i "s/^checkout_outcome=.*/checkout_outcome=success/" "$evidence_dir/status.txt"
+          sed -i "s/^actual_head_sha=.*/actual_head_sha=${actual_head_sha}/" "$evidence_dir/manifest.txt"
+          sed -i "s/^stage=.*/stage=checked_out/" "$evidence_dir/manifest.txt"
+          sed -i "s/^status=.*/status=head_verified/" "$evidence_dir/manifest.txt"
+          if [ "$actual_head_sha" != "$EXPECTED_HEAD_SHA" ]; then
+            sed -i "s/^status=.*/status=head_mismatch/" "$evidence_dir/status.txt"
+            echo "Expected head SHA ${EXPECTED_HEAD_SHA}, got ${actual_head_sha}" >&2
+            exit 1
+          fi
+          cat "$evidence_dir/status.txt"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.30.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        id: install_dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        id: chromium
+        run: pnpm --filter client exec playwright install --with-deps chromium
+
+      - name: Run Playwright tests with traces
+        id: playwright
+        run: pnpm --filter client exec playwright test --trace on --reporter=github,html
+
+      - name: Write final status and manifest
+        if: always()
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          INSTALL_OUTCOME: ${{ steps.install_dependencies.outcome }}
+          CHROMIUM_OUTCOME: ${{ steps.chromium.outcome }}
+          PLAYWRIGHT_OUTCOME: ${{ steps.playwright.outcome }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/browser-evidence"
+          mkdir -p "$evidence_dir"
+
+          actual_head_sha="$(cat "$evidence_dir/actual-head-sha.txt" 2>/dev/null || echo not_checked)"
+          traces=not_produced
+          test_results=not_produced
+          html_report=not_produced
+
+          if [ -d client/test-results ] && [ -n "$(find client/test-results -type f -name 'trace.zip' -print -quit 2>/dev/null || true)" ]; then
+            traces=produced
+          fi
+          if [ -d client/test-results ] && [ -n "$(find client/test-results -type f -print -quit 2>/dev/null || true)" ]; then
+            test_results=produced
+          fi
+          if [ -d client/playwright-report ] && [ -n "$(find client/playwright-report -type f -print -quit 2>/dev/null || true)" ]; then
+            html_report=produced
+          fi
+
+          mkdir -p "$evidence_dir/playwright"
+          if [ "$test_results" = produced ]; then
+            cp -R client/test-results "$evidence_dir/playwright/test-results"
+          fi
+          if [ "$html_report" = produced ]; then
+            cp -R client/playwright-report "$evidence_dir/playwright/playwright-report"
+          fi
+
+          missing_outputs=""
+          [ "$traces" = produced ] || missing_outputs="${missing_outputs}traces "
+          [ "$test_results" = produced ] || missing_outputs="${missing_outputs}test_results "
+          [ "$html_report" = produced ] || missing_outputs="${missing_outputs}html_report "
+          missing_outputs="${missing_outputs% }"
+          [ -n "$missing_outputs" ] || missing_outputs=none
+
+          stage=pre_checkout
+          if [ "$CHECKOUT_OUTCOME" = success ]; then
+            stage=checked_out
+          fi
+          if [ "$INSTALL_OUTCOME" = success ]; then
+            stage=dependencies_installed
+          fi
+          if [ "$CHROMIUM_OUTCOME" = success ]; then
+            stage=chromium_installed
+          fi
+          if [ "$PLAYWRIGHT_OUTCOME" != skipped ]; then
+            stage="playwright_${PLAYWRIGHT_OUTCOME}"
+          fi
+
+          reason=""
+          if [ "$test_results" != produced ]; then
+            if [ "$CHECKOUT_OUTCOME" != success ]; then
+              reason="checkout_${CHECKOUT_OUTCOME}"
+            elif [ "$INSTALL_OUTCOME" != success ]; then
+              reason="dependencies_${INSTALL_OUTCOME}"
+            elif [ "$CHROMIUM_OUTCOME" != success ]; then
+              reason="chromium_${CHROMIUM_OUTCOME}"
+            elif [ "$PLAYWRIGHT_OUTCOME" != success ]; then
+              reason="playwright_${PLAYWRIGHT_OUTCOME}"
+            else
+              reason=playwright_produced_no_results
+            fi
+          fi
+          if [ "$actual_head_sha" != not_checked ] && [ "$actual_head_sha" != "$EXPECTED_HEAD_SHA" ]; then
+            stage=head_mismatch
+            reason=head_mismatch
+          fi
+
+          cat > "$evidence_dir/status.txt" <<EOF
+          pr=${PR_NUMBER}
+          expected_head_sha=${EXPECTED_HEAD_SHA}
+          actual_head_sha=${actual_head_sha}
+          run_id=${{ github.run_id }}
+          run_attempt=${{ github.run_attempt }}
+          stage=${stage}
+          status=${JOB_STATUS}
+          checkout_outcome=${CHECKOUT_OUTCOME}
+          install_dependencies_outcome=${INSTALL_OUTCOME}
+          chromium_outcome=${CHROMIUM_OUTCOME}
+          playwright_outcome=${PLAYWRIGHT_OUTCOME}
+          traces=${traces}
+          test_results=${test_results}
+          html_report=${html_report}
+          missing_outputs=${missing_outputs}
+          reason=${reason}
+          checked_at=$(date -u +%FT%TZ)
+          run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          command=pnpm --filter client exec playwright test --trace on --reporter=github,html
+          EOF
+
+          cat > "$evidence_dir/manifest.txt" <<EOF
+          artifact=browser-evidence
+          pr=${PR_NUMBER}
+          expected_head_sha=${EXPECTED_HEAD_SHA}
+          actual_head_sha=${actual_head_sha}
+          run_id=${{ github.run_id }}
+          run_attempt=${{ github.run_attempt }}
+          stage=${stage}
+          status_file=status.txt
+          traces=${traces}
+          test_results=${test_results}
+          html_report=${html_report}
+          missing_outputs=${missing_outputs}
+          playwright_output=playwright
+          reason=${reason}
+          checked_at=$(date -u +%FT%TZ)
+          EOF
+
+          cat "$evidence_dir/status.txt"
+          cat "$evidence_dir/manifest.txt"
+
+      - name: Verify required evidence files
+        if: always()
+        run: |
+          set -euo pipefail
+          evidence_dir="${RUNNER_TEMP}/browser-evidence"
+          test -s "$evidence_dir/status.txt"
+          test -s "$evidence_dir/manifest.txt"
+          test -f "$evidence_dir/actual-head-sha.txt"
+
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-evidence-pr-${{ github.event.pull_request.number }}-sha-${{ github.event.pull_request.head.sha }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-evidence
+          if-no-files-found: error
+          retention-days: 14

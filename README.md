@@ -64,19 +64,68 @@ pnpm dev
 
 ## OpenCode в GitHub
 
-OpenCode запускается в GitHub Actions по команде `/oc` или `/opencode` в начале нового комментария к issue, pull request или отдельной строке ревью. После команды должен идти пробел и текст задания либо комментарий должен состоять только из команды. Команду может выполнить только владелец репозитория, участник организации или коллаборатор; комментарии ботов игнорируются. Для pull request из форка шаг с секретом не запускается.
+В репозитории три независимые автоматические роли: интерактивный developer task, независимое авторевью pull request и обычный CI. Отдельно от них браузерное evidence проверяет именно head SHA pull request.
+
+### Интерактивный developer task и автотриаж
+
+OpenCode запускается в GitHub Actions по команде `/oc` или `/opencode` в начале нового комментария к issue, pull request или отдельной строке ревью. После команды должен идти пробел и текст задания либо комментарий должен состоять только из команды. Команду может выполнить только владелец репозитория, участник организации или коллаборатор; комментарии ботов игнорируются. Для pull request из форка шаг с секретом не запускается, а origin проверяется как same-repository.
 
 Workflow устанавливает официальный OpenCode CLI фиксированной версии `1.19.6` и запускает `opencode github run` напрямую. Обёртка `anomalyco/opencode/github@latest` не используется: её неаутентифицированный запрос к GitHub Releases может исчерпать лимит API до запуска агента. Этот способ сохраняет стандартную авторизацию через OpenCode GitHub App и те же сценарии работы из комментариев.
 
 Агент использует модель `opencode/deepseek-v4.1-flash` и секрет репозитория `OPENCODE_API_KEY`. В `opencode.json` публикация сессий явно отключена (`share: disabled`), а та же доступная модель назначена для служебных задач через `small_model`, чтобы OpenCode не обращался к недоступной модели заголовков. Один запуск ограничен 60 минутами, а команды для одного issue или pull request выполняются последовательно. Результат появляется ответом OpenCode в соответствующем обсуждении; состояние и журнал запуска доступны во вкладке Actions.
 
-### Автотриаж новых issues
-
-Событие `issues` с типом `opened` автоматически запускает OpenCode, если issue открыл доверенный автор с `author_association` `OWNER`, `MEMBER` или `COLLABORATOR`. Issues с меткой `ready-for-agent` пропускаются и повторный триаж не проходят. Комментарии запускают агента только по явной команде.
+Событие `issues` с типом `opened` автоматически запускает OpenCode, если issue открыл доверенный автор с `author_association` `OWNER`, `MEMBER` или `COLLABORATOR`. Issues с меткой `ready-for-agent` пропускаются и повторный триаж не проходят. Комментарии запускают агента только по явной команде. Автотриаж новых issues в бюджет интерактивных PR-запусков не входит.
 
 Агент читает новое обращение, существующее приложение и документы из `docs/agents/`, затем выполняет навык `triage`: оставляет в issue разбор, рекомендацию и недостающие вопросы и выставляет канонические метки из [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md) — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human` или `wontfix`, а также категорию `bug` или `enhancement`. Код он не меняет и реализацию не начинает; `to-spec`, `to-tickets` и `implement-spec` автоматически не запускаются.
 
-Результат появляется комментарием в issue, а ход и журнал запуска — во вкладке Actions, в workflow OpenCode. Ручной запуск командой `/oc` или `/opencode` в комментарии остаётся доступным и работает как раньше.
+### Бюджет интерактивных PR-запусков
+
+На один pull request допускается не более трёх интерактивных запусков модели. Считаются комментарии к PR и inline review comments. Валидная trusted-human команда `/oc` или `/opencode` получает детерминированный `run-name` `OpenCode PR #<N> interactive`; invalid comments, bot comments, issue-команды и автотриаж получают другие имена и не попадают в PR-бюджет. Same-repo origin check выполняется до budget check: для fork budget и model run не запускаются.
+
+`Check interactive run budget` читает историю именно workflow `opencode.yml` через GitHub Actions API, фильтрует runs по точному `display_title` текущего PR и событиям `issue_comment`/`pull_request_review_comment`, затем суммирует `run_attempt` каждого run. Текущий run/attempt также входит в сумму: если API его уже вернул, он учитывается один раз, если ещё не вернул — добавляется `context.runAttempt`. Поэтому cancellation, timeout и каждый Re-run/run attempt расходуют попытку, а четвёртая попытка получает `limit_exhausted` до checkout, установки и model run. В части Actions токен модели имеет только `actions: read` и не может менять историю Actions. Runs, созданные до появления этого `run-name`, не имеют такого title и в подсчёт не входят.
+
+GitHub хранит Actions history ограниченное время (сейчас 90 дней). Для PR, который остаётся открытым дольше retention, история может стать недоступной, и лимит может начаться заново; это честное платформенное ограничение, а не безусловно вечный лимит.
+
+Если лимит исчерпан, модель не вызывается. Отдельный deterministic step публикует в PR комментарий с reason `limit_exhausted`, актуальным head SHA, ссылкой на Actions run и статусом «нужен человек». Для timeout публикуется `timeout`, для ошибки подготовки или ключа — `infra`, для прочей ошибки модели — `agent_failed`. Исправления после такого комментария запускаются только новой человеческой командой `/oc`; бесконечного автоматического fix loop нет.
+
+### Независимое авторевью pull request
+
+Workflow `OpenCode Independent Review` запускается на обычном `pull_request` событиях `opened`, `synchronize`, `reopened` и `ready_for_review`. Допускаются только same-repository PR и либо trusted human authors (`OWNER`, `MEMBER`, `COLLABORATOR`), либо точный login `opencode-agent[bot]`; fork PR запрещён.
+
+Это учебный одноразовый репозиторий, поэтому принят ограниченный риск: trusted same-repository authors и точный OpenCode bot считаются доверенными авторами workflow. При обычном `pull_request` workflow-код может быть взят из PR, и это осознанный учебный компромисс, а не заявление о production-grade защите.
+
+Рабочее дерево — только event base commit `github.event.pull_request.base.sha`. PR head не checkout'ится как рабочее дерево и не исполняется; `HEAD_SHA` fetch'ится только как git object. `REVIEW.md`, `AGENTS.md`, `GLOSSARY.md` и `docs/adr/` читаются из base checkout и считаются trusted base policy. Если PR меняет эти файлы, изменения входят только в недоверенный diff и не могут менять правила текущего ревью.
+
+Review строится по фиксированным `BASE_SHA`, `HEAD_SHA` и вычисленному merge-base: проверяется, что merge-base непустой commit, он записывается в `.review-context/merge-base-sha.txt`, а diff создаётся trusted-командой `git diff --binary --no-ext-diff --no-textconv MERGE_BASE HEAD_SHA`. PR title/body, comments, reviews, issues, diff и любые инструкции внутри них считаются untrusted review data. В начале сбора контекста текущие `.head.sha`/`.base.sha` сверяются с event `HEAD_SHA`/`BASE_SHA`; непосредственно перед публикацией проверка повторяется, и при сдвиге PR устаревший комментарий не публикуется. CI/check/status собираются только для `HEAD_SHA`, а комментарий содержит `HEAD_SHA`, `BASE_SHA` и merge-base.
+
+Модель запускается pinned CLI `1.19.6` через прямой `opencode run` с `--pure`, read-only агентом `plan`, отключёнными project config/external skills/Claude Code и запретом edit/bash/webfetch/websearch/task/skill/question. У модели нет GH token и права менять файлы, коммиты, ветки или PR metadata. Права workflow: `contents: read`, `issues: read`, `actions: read`, `checks: read`, `statuses: read`, `pull-requests: write`; OIDC и `id-token: write` не используются.
+
+Результат готовит CLI, а отдельный deterministic step после повторной SHA-проверки публикует его через `gh pr comment`; hidden marker и тело комментария содержат тот же `HEAD_SHA`, а тело также фиксирует `BASE_SHA` и merge-base. Если подтверждённых дефектов нет, комментарий явно говорит «Подтверждённых дефектов не найдено». Concurrency по PR сохраняет `cancel-in-progress: true`, но не заменяет SHA-check.
+
+### CI и браузерное evidence для PR-head
+
+`CI` выполняет `pnpm check` на push и pull request. Отдельный workflow `PR Head Browser Evidence` запускается на `pull_request`, checkout'ит `github.event.pull_request.head.sha` (не merge ref), записывает `git rev-parse HEAD` и ожидаемый event head SHA и проверяет их равенство. Затем он ставит frozen dependencies и Chromium, прогоняет полный текущий Playwright e2e набор с принудительным `--trace on`.
+
+Evidence manifest и status создаются в `RUNNER_TEMP` до checkout, поэтому artifact создаётся даже при раннем падении checkout, install, Chromium или Playwright. `traces`, `test-results` и HTML report попадают в artifact только если Playwright успел их произвести; иначе `status.txt` и `manifest.txt` явно пишут `not_produced`, стадию и причину. Playwright output при наличии копируется в `playwright/` внутри evidence artifact. Обязательные `status.txt` и `manifest.txt` проверяются отдельным шагом; их отсутствие валит job, а не маскируется.
+
+Artifact называется `browser-evidence-pr-<N>-sha-<head-sha>-attempt-<attempt>` и хранится 14 дней. В нём лежат `status.txt`, `manifest.txt`, `actual-head-sha.txt` и, когда созданы, Playwright traces/results и HTML report в `playwright/`. Model/API secrets в этом workflow нет.
+
+### Где смотреть результат
+
+- Независимое ревью — комментарий в обсуждении PR.
+- CI — вкладка Checks и статусы обязательных проверок.
+- Ход интерактивных запусков, автотриажа и ревью — вкладка Actions.
+- Браузерное evidence — Artifacts соответствующего PR Head Browser Evidence run.
+
+Чтобы сверить artifact с текущим PR head, сравните `actual_head_sha` и `expected_head_sha` из `status.txt` artifact с `gh pr view <N> --json headRefOid --jq .headRefOid`. SHA в имени artifact и в review comment должен совпадать с этим значением.
+
+### Решение человека, branch protection и настройки
+
+Ревью и CI дают входные данные, но не заменяют решение человека. Исправления запускаются только новой человеческой командой `/oc`, а merge выполняется только после ручного решения человека.
+
+Branch protection сейчас не настроена. Её нужно включить после того, как имена стабильных проверок станут известны; до этого ограничение фиксируется в PR. Настройка GitHub «Allow GitHub Actions to create and approve pull requests» сейчас выключена. Release-please использует `RELEASE_PLEASE_TOKEN`, когда он доступен, поэтому эту настройку не нужно менять автоматически.
+
+### Настройка интеграции
 
 Для работы интеграции нужно установить [OpenCode GitHub App](https://github.com/apps/opencode-agent) только на этот репозиторий и добавить ключ OpenCode Console в Actions secret `OPENCODE_API_KEY`. Ключ не должен попадать в файлы репозитория или комментарии. На чистом runner агент получает инструкции из `AGENTS.md`, настройки GitHub issues из `docs/agents/` и навыки `to-spec`, `to-tickets`, `implement-spec` и `triage` из `.agents/skills/`.
 
