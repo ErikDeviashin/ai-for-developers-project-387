@@ -78,6 +78,58 @@ function validationError(details: FieldError[]): ErrorResponse {
   }
 }
 
+function parseGuestEmail(
+  raw: unknown,
+): { ok: true; value: string } | { ok: false; error: FieldError } {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return {
+      ok: false,
+      error: {
+        field: 'guestEmail',
+        code: 'REQUIRED',
+        message: 'Укажите email',
+      },
+    }
+  }
+
+  const trimmed = raw.trim()
+
+  if (trimmed.length < GUEST_EMAIL_MIN_LENGTH) {
+    return {
+      ok: false,
+      error: {
+        field: 'guestEmail',
+        code: 'INVALID_VALUE',
+        message: `Email должен быть длиной от ${GUEST_EMAIL_MIN_LENGTH} до ${GUEST_EMAIL_MAX_LENGTH} символов`,
+      },
+    }
+  }
+
+  if (trimmed.length > GUEST_EMAIL_MAX_LENGTH) {
+    return {
+      ok: false,
+      error: {
+        field: 'guestEmail',
+        code: 'TOO_LONG',
+        message: `Email должен быть не длиннее ${GUEST_EMAIL_MAX_LENGTH} символов`,
+      },
+    }
+  }
+
+  if (!EMAIL_PATTERN.test(trimmed)) {
+    return {
+      ok: false,
+      error: {
+        field: 'guestEmail',
+        code: 'INVALID_EMAIL',
+        message: 'Укажите корректный email',
+      },
+    }
+  }
+
+  return { ok: true, value: trimmed }
+}
+
 export function parseCreateMeetingTypeBody(body: unknown): ParseResult<NewMeetingTypeInput> {
   if (!isRecord(body)) {
     return {
@@ -237,37 +289,12 @@ export function parseCreateMeetingBody(body: unknown): ParseResult<NewMeetingInp
     guestName = body.guestName.trim()
   }
 
+  const parsedEmail = parseGuestEmail(body.guestEmail)
   let guestEmail: string | undefined
-  if (typeof body.guestEmail !== 'string' || body.guestEmail.trim() === '') {
-    details.push({
-      field: 'guestEmail',
-      code: 'REQUIRED',
-      message: 'Укажите email',
-    })
+  if (parsedEmail.ok) {
+    guestEmail = parsedEmail.value
   } else {
-    const trimmed = body.guestEmail.trim()
-
-    if (trimmed.length < GUEST_EMAIL_MIN_LENGTH) {
-      details.push({
-        field: 'guestEmail',
-        code: 'INVALID_VALUE',
-        message: `Email должен быть длиной от ${GUEST_EMAIL_MIN_LENGTH} до ${GUEST_EMAIL_MAX_LENGTH} символов`,
-      })
-    } else if (trimmed.length > GUEST_EMAIL_MAX_LENGTH) {
-      details.push({
-        field: 'guestEmail',
-        code: 'TOO_LONG',
-        message: `Email должен быть не длиннее ${GUEST_EMAIL_MAX_LENGTH} символов`,
-      })
-    } else if (!EMAIL_PATTERN.test(trimmed)) {
-      details.push({
-        field: 'guestEmail',
-        code: 'INVALID_EMAIL',
-        message: 'Укажите корректный email',
-      })
-    } else {
-      guestEmail = trimmed
-    }
+    details.push(parsedEmail.error)
   }
 
   let guestAdditionalInfo: string | undefined
@@ -352,37 +379,12 @@ export function parseCancelMeetingBody(body: unknown): ParseResult<CancelMeeting
     }
   }
 
+  const parsedEmail = parseGuestEmail(body.guestEmail)
   let guestEmail: string | undefined
-  if (typeof body.guestEmail !== 'string' || body.guestEmail.trim() === '') {
-    details.push({
-      field: 'guestEmail',
-      code: 'REQUIRED',
-      message: 'Укажите email',
-    })
+  if (parsedEmail.ok) {
+    guestEmail = parsedEmail.value
   } else {
-    const trimmed = body.guestEmail.trim()
-
-    if (trimmed.length < GUEST_EMAIL_MIN_LENGTH) {
-      details.push({
-        field: 'guestEmail',
-        code: 'INVALID_VALUE',
-        message: `Email должен быть длиной от ${GUEST_EMAIL_MIN_LENGTH} до ${GUEST_EMAIL_MAX_LENGTH} символов`,
-      })
-    } else if (trimmed.length > GUEST_EMAIL_MAX_LENGTH) {
-      details.push({
-        field: 'guestEmail',
-        code: 'TOO_LONG',
-        message: `Email должен быть не длиннее ${GUEST_EMAIL_MAX_LENGTH} символов`,
-      })
-    } else if (!EMAIL_PATTERN.test(trimmed)) {
-      details.push({
-        field: 'guestEmail',
-        code: 'INVALID_EMAIL',
-        message: 'Укажите корректный email',
-      })
-    } else {
-      guestEmail = trimmed
-    }
+    details.push(parsedEmail.error)
   }
 
   if (details.length > 0 || guestEmail === undefined) {

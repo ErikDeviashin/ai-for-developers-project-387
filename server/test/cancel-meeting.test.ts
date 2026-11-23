@@ -1,8 +1,5 @@
 import type { FastifyInstance } from 'fastify'
 import type { DatabaseSync } from 'node:sqlite'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { openDatabase } from '../src/database.js'
@@ -346,47 +343,26 @@ describe('POST /meetings/{id}/cancel validation', () => {
 
 describe('POST /meetings/{id}/cancel concurrency', () => {
   it('cancels exactly once when two requests cancel the same meeting concurrently', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'calendar-cancel-'))
-    const filename = join(directory, 'calendar.sqlite')
-    const firstDb = openDatabase(filename)
-    const secondDb = openDatabase(filename)
-    const firstApp = buildApp({ db: firstDb, now: () => new Date(NOW) })
-    const secondApp = buildApp({ db: secondDb, now: () => new Date(NOW) })
+    const meetingType = await createMeetingType()
+    const meeting = await book(meetingType.id)
+    const secondApp = buildApp({ db, now: () => new Date(NOW) })
 
     try {
-      const created = await firstApp.inject({
-        method: 'POST',
-        url: '/meeting-types',
-        payload: { name: 'Консультация', durationMinutes: 30 },
-      })
-      const meetingType = created.json() as MeetingTypeResponse
-      const booked = await firstApp.inject({
-        method: 'POST',
-        url: '/meetings',
-        payload: {
-          meetingTypeId: meetingType.id,
-          start: START,
-          guestName: 'Анна',
-          guestEmail: 'anna@example.com',
-        },
-      })
-      const meeting = booked.json() as MeetingResponse
-
       const body = { guestEmail: 'anna@example.com' }
       const [first, second] = await Promise.all([
-        firstApp.inject({ method: 'POST', url: `/meetings/${meeting.id}/cancel`, payload: body }),
-        secondApp.inject({ method: 'POST', url: `/meetings/${meeting.id}/cancel`, payload: body }),
+        cancel(meeting.id, body),
+        secondApp.inject({
+          method: 'POST',
+          url: `/meetings/${meeting.id}/cancel`,
+          payload: body,
+        }),
       ])
 
       expect([first.statusCode, second.statusCode].sort((left, right) => left - right)).toEqual([
         204, 404,
       ])
     } finally {
-      await firstApp.close()
       await secondApp.close()
-      firstDb.close()
-      secondDb.close()
-      rmSync(directory, { recursive: true, force: true })
     }
   })
 })

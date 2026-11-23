@@ -104,7 +104,7 @@ export function cancelMeeting(
   // No row was deleted: either the meeting/email pair does not match, or the
   // meeting has already started. Match the same expression as the DELETE so
   // the reason is consistent with it.
-  const remaining = db
+  const matchedMeeting = db
     .prepare(
       `SELECT start_ms AS start_ms
          FROM meetings
@@ -113,11 +113,11 @@ export function cancelMeeting(
     )
     .get(id, guestEmail) as { start_ms: number } | undefined
 
-  if (remaining === undefined) {
+  if (matchedMeeting === undefined) {
     return 'not_found'
   }
 
-  return remaining.start_ms <= now.getTime() ? 'already_started' : 'not_found'
+  return matchedMeeting.start_ms <= now.getTime() ? 'already_started' : 'not_found'
 }
 
 export function createMeeting(

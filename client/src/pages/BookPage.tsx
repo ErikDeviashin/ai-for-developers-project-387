@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   cancelMeeting,
   createMeeting,
@@ -137,8 +137,11 @@ export function BookPage() {
   const [cancelConfirming, setCancelConfirming] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [cancelError, setCancelError] = useState<string | null>(null)
-  const [meetingStarted, setMeetingStarted] = useState(false)
+  const [blockedMeetingId, setBlockedMeetingId] = useState<number | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const cancelTriggerRef = useRef<HTMLButtonElement>(null)
+  const cancelDeclineRef = useRef<HTMLButtonElement>(null)
+  const wasCancelConfirming = useRef(false)
 
   useEffect(() => {
     let active = true
@@ -199,16 +202,30 @@ export function BookPage() {
   }, [meetingTypeId, reloadKey])
 
   useEffect(() => {
-    const timer = setInterval(() => setNowMs(Date.now()), 30_000)
+    if (createdMeeting === null) {
+      return
+    }
 
-    return () => clearInterval(timer)
-  }, [])
+    const delay = Math.max(Date.parse(createdMeeting.start) - Date.now(), 0)
+    const timer = setTimeout(() => setNowMs(Date.now()), delay)
+
+    return () => clearTimeout(timer)
+  }, [createdMeeting])
+
+  useEffect(() => {
+    if (cancelConfirming) {
+      cancelDeclineRef.current?.focus()
+    } else if (wasCancelConfirming.current) {
+      cancelTriggerRef.current?.focus()
+    }
+
+    wasCancelConfirming.current = cancelConfirming
+  }, [cancelConfirming])
 
   function resetCancelState() {
     setCancelConfirming(false)
     setCancelling(false)
     setCancelError(null)
-    setMeetingStarted(false)
     setNowMs(Date.now())
   }
 
@@ -354,6 +371,7 @@ export function BookPage() {
       }
 
       setCreatedMeeting(data)
+      setBlockedMeetingId(null)
       resetCancelState()
       setSelectedDate(data.start.slice(0, 10))
       setSelectedSlot(null)
@@ -439,9 +457,8 @@ export function BookPage() {
       }
 
       setCreatedMeeting(null)
-      setCancelConfirming(false)
-      setCancelError(null)
-      setMeetingStarted(false)
+      setBlockedMeetingId(null)
+      resetCancelState()
       setSuccessMessage('Встреча отменена')
       setNotice(null)
       setCheckError(null)
@@ -455,7 +472,7 @@ export function BookPage() {
 
       if (response?.code === 'MEETING_ALREADY_STARTED') {
         setCancelConfirming(false)
-        setMeetingStarted(true)
+        setBlockedMeetingId(createdMeeting.id)
         setCancelError(response.message)
         return
       }
@@ -489,7 +506,9 @@ export function BookPage() {
       ? createdMeeting.start.slice(0, 10)
       : null
   const canCancel =
-    createdMeeting !== null && !meetingStarted && nowMs < Date.parse(createdMeeting.start)
+    createdMeeting !== null &&
+    createdMeeting.id !== blockedMeetingId &&
+    nowMs < Date.parse(createdMeeting.start)
 
   return (
     <PageContainer>
@@ -631,6 +650,7 @@ export function BookPage() {
                                 {cancelling ? 'Отменяем…' : 'Да, отменить'}
                               </button>
                               <button
+                                ref={cancelDeclineRef}
                                 type="button"
                                 onClick={handleDeclineCancel}
                                 disabled={cancelling}
@@ -642,6 +662,7 @@ export function BookPage() {
                           </fieldset>
                         ) : (
                           <button
+                            ref={cancelTriggerRef}
                             type="button"
                             onClick={() => {
                               setCancelConfirming(true)
