@@ -70,7 +70,15 @@ Workflow устанавливает официальный OpenCode CLI фикс
 
 Агент использует модель `opencode/deepseek-v4.1-flash` и секрет репозитория `OPENCODE_API_KEY`. В `opencode.json` публикация сессий явно отключена (`share: disabled`), а та же доступная модель назначена для служебных задач через `small_model`, чтобы OpenCode не обращался к недоступной модели заголовков. Один запуск ограничен 60 минутами, а команды для одного issue или pull request выполняются последовательно. Результат появляется ответом OpenCode в соответствующем обсуждении; состояние и журнал запуска доступны во вкладке Actions.
 
-Для работы интеграции нужно установить [OpenCode GitHub App](https://github.com/apps/opencode-agent) только на этот репозиторий и добавить ключ OpenCode Console в Actions secret `OPENCODE_API_KEY`. Ключ не должен попадать в файлы репозитория или комментарии. На чистом runner агент получает инструкции из `AGENTS.md`, настройки GitHub issues из `docs/agents/` и навыки `to-spec`, `to-tickets` и `implement-spec` из `.agents/skills/`.
+### Автотриаж новых issues
+
+Событие `issues` с типом `opened` автоматически запускает OpenCode, если issue открыл доверенный автор с `author_association` `OWNER`, `MEMBER` или `COLLABORATOR`. Issues с меткой `ready-for-agent` пропускаются и повторный триаж не проходят. Комментарии запускают агента только по явной команде.
+
+Агент читает новое обращение, существующее приложение и документы из `docs/agents/`, затем выполняет навык `triage`: оставляет в issue разбор, рекомендацию и недостающие вопросы и выставляет канонические метки из [`docs/agents/triage-labels.md`](docs/agents/triage-labels.md) — `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human` или `wontfix`, а также категорию `bug` или `enhancement`. Код он не меняет и реализацию не начинает; `to-spec`, `to-tickets` и `implement-spec` автоматически не запускаются.
+
+Результат появляется комментарием в issue, а ход и журнал запуска — во вкладке Actions, в workflow OpenCode. Ручной запуск командой `/oc` или `/opencode` в комментарии остаётся доступным и работает как раньше.
+
+Для работы интеграции нужно установить [OpenCode GitHub App](https://github.com/apps/opencode-agent) только на этот репозиторий и добавить ключ OpenCode Console в Actions secret `OPENCODE_API_KEY`. Ключ не должен попадать в файлы репозитория или комментарии. На чистом runner агент получает инструкции из `AGENTS.md`, настройки GitHub issues из `docs/agents/` и навыки `to-spec`, `to-tickets`, `implement-spec` и `triage` из `.agents/skills/`.
 
 Проверка интеграции: создайте тестовый issue и оставьте доверенным пользователем комментарий `/oc explain this issue`. Успешный запуск должен появиться в Actions и завершиться ответом агента в issue.
 
