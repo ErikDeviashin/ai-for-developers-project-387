@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.0](https://github.com/ErikDeviashin/ai-for-developers-project-387/compare/v0.1.0...v0.2.0) (2026-11-24)
+
+
+### Features
+
+* отмена только что созданной встречи гостем ([#4](https://github.com/ErikDeviashin/ai-for-developers-project-387/issues/4), [#5](https://github.com/ErikDeviashin/ai-for-developers-project-387/issues/5), [#6](https://github.com/ErikDeviashin/ai-for-developers-project-387/issues/6)) ([5f5c388](https://github.com/ErikDeviashin/ai-for-developers-project-387/commit/5f5c38817c3b8cafa0fc5888fdc7df6add6d8de9))
+
+
+### Bug Fixes
+
+* **ci:** harden OpenCode workflow ([ee8ea23](https://github.com/ErikDeviashin/ai-for-developers-project-387/commit/ee8ea2380ece242357ec2fefd44e44c1909ca826))
+* **ci:** run OpenCode CLI directly ([87768f7](https://github.com/ErikDeviashin/ai-for-developers-project-387/commit/87768f7eebe8ae4c132ee8d506312594d13787d8))
+* **ci:** unblock OpenCode issue automation ([005623a](https://github.com/ErikDeviashin/ai-for-developers-project-387/commit/005623a74f1c94cdbb3dd91659cc69f7921daf80))
+* **ci:** use available OpenCode model ([453f982](https://github.com/ErikDeviashin/ai-for-developers-project-387/commit/453f982f5b92b254ee719da730ed147d88eadffc))
+
 ## 0.1.0 (2026-11-22)
 
 
