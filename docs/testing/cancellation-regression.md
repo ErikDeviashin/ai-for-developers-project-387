@@ -1,0 +1,118 @@
+# Проверка чувствительности теста отмены встречи
+
+Этот документ фиксирует, что регрессионный тест отмены встречи действительно
+ловит нарушение правила, а после восстановления кода снова проходит.
+
+## Защищаемое правило
+
+**Встречу нельзя отменить после её начала.** Сервер удаляет встречу только при
+совпадении `id` и email гостя и только если `start_ms > now`. После начала
+встречи отмена возвращает `409 MEETING_ALREADY_STARTED`, а встреча и занятый
+слот сохраняются.
+
+Правило реализовано в `server/src/meetings.ts` в функции `cancelMeeting`, а
+проверяется тестом:
+
+```
+server/test/cancel-meeting.test.ts > POST /meetings/{id}/cancel >
+rejects a cancellation once the meeting has started and keeps it
+```
+
+## Почему этого теста достаточно
+
+Тест проверяет все три части правила одновременно:
+
+- ответ на отмену начавшейся встречи — `409` с кодом
+  `MEETING_ALREADY_STARTED`;
+- встреча сохраняется — `listMeetings` по-прежнему содержит её `id`;
+- занятость слота сохраняется — `availabilityStarts` не содержит `START`.
+
+Поэтому мутация, разрешающая отмену, не может пройти незамеченной: она ломает
+и HTTP-ответ, и сохранность данных.
+
+## Точная команда целевого теста
+
+```bash
+pnpm --filter server exec vitest run test/cancel-meeting.test.ts -t "rejects a cancellation once the meeting has started and keeps it"
+```
+
+Ожидаемый зелёный результат в текущем `main`:
+
+```
+Test Files  1 passed (1)
+     Tests  1 passed | 23 skipped (24)
+```
+
+## Воспроизводимая процедура red/green
+
+Процедура выполняется в одноразовом незакоммиченном рабочем дереве. Сломанный
+код не коммитится и не публикуется.
+
+1. Убедитесь, что рабочее дерево чистое. Если `git status --porcelain`
+   выводит хотя бы одну строку, **прекратите выполнение**: процедура не должна
+   затрагивать незакоммиченные пользовательские изменения.
+
+   ```bash
+   git status --porcelain
+   baseline_sha="$(git rev-parse HEAD)"
+   printf 'baseline_sha=%s\n' "$baseline_sha"
+   ```
+
+   Вывод `git status --porcelain` должен быть пустым. Сохраните текущий commit
+   в переменную `baseline_sha` — именно это значение используется для явного
+   восстановления файла на шаге 5. Переменная должна оставаться в той же
+   shell-сессии; если вы открываете новую сессию, задайте её повторно.
+
+2. Запустите целевой тест и зафиксируйте зелёный baseline:
+
+   ```bash
+   pnpm --filter server exec vitest run test/cancel-meeting.test.ts -t "rejects a cancellation once the meeting has started and keeps it"
+   ```
+
+   Ожидается `1 passed | 23 skipped`.
+
+3. Временно нарушьте только правило начала встречи: в
+   `server/src/meetings.ts` замените в `DELETE`-запросе функции `cancelMeeting`
+   условие `AND start_ms > ?` на `AND start_ms <= ?`. Это разрешает удаление
+   уже начавшейся встречи.
+
+4. Запустите ту же команду из шага 2. Ожидаемое падение именно выбранного
+   теста:
+
+   ```
+   FAIL  test/cancel-meeting.test.ts > POST /meetings/{id}/cancel > rejects a cancellation once the meeting has started and keeps it
+   AssertionError: expected 204 to be 409 // Object.is equality
+   - Expected
+   + Received
+   - 409
+   + 204
+   ```
+
+   `204` означает, что мутация разрешила отмену начавшейся встречи, то есть
+   тест поймал нарушение правила.
+
+5. Восстановите только проверяемый файл из зафиксированного commit в
+   `baseline_sha`. Не используйте безусловный `git checkout --`: он может
+   стереть незакоммиченную работу. Явно укажите путь и источник
+   восстановления:
+
+   ```bash
+   git restore --source="$baseline_sha" --worktree -- server/src/meetings.ts
+   git diff --exit-code -- server/src/meetings.ts
+   git status --porcelain -- server/src/meetings.ts
+   ```
+
+   `git diff` должен быть пустым, а `git status --porcelain` по этому файлу не
+   должен выводить ничего.
+
+6. Повторно запустите ту же команду из шага 2 и зафиксируйте зелёный
+   результат `1 passed | 23 skipped`.
+
+## Границы
+
+- Меняется только локальное незакоммиченное состояние `server/src/meetings.ts`;
+  после проверки восстанавливается только этот файл из commit в
+  `baseline_sha` при подтверждённо чистом старте.
+- Production-код, API, схема БД, зависимости и сгенерированные файлы не
+  меняются.
+- Mutation-testing framework и автоматизация мутаций в CI не добавляются.
